@@ -1,0 +1,342 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Riccardo Fusaroli"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment 3 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia, focusing on pitch.
+In the course of this assignment we will use them to try to automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+
+### Question 1
+Build a logistic regression to see whether you can diagnose schizophrenia from pitch range only.
+
+```{r}
+# Some packgages
+pacman::p_load(knitr,lme4,caret,e1071,pROC,dplyr)
+
+# Read in data
+data = read.csv("final_rqa.csv")
+
+data$participant = as.factor(data$participant)
+data$study = as.factor(data$study)
+str(data)
+
+# Scale everything
+data <- data %>% mutate_each_(funs(scale(.) %>% as.vector), 
+                             vars=c("mean","stdDev","range","median","InterquartileRange","MeanAbsoluteDeviation","coefficientOfVariation","delay","radius","embed","rqa_REC","rqa_DET","rqa_maxL","rqa_L","rqa_ENTR","rqa_TT","rqa_LAM"))
+
+# Predict schizophrenia from pitch range only
+model1 = glm(diagnosis ~ range, family = binomial, data)
+summary(model1)
+
+## not the best results
+# log odds tho
+exp(0.0481705)
+
+## 1.04935 control:skiso (but check pls)
+``` 
+
+Calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve) on a logistic regression using the full dataset. Don't forget the random effects!
+
+```{r}
+# Start off with a glmer model (because you introduce random effects you can't really use glm anymore
+model2 = glmer(diagnosis ~ range + (1|study), family = binomial, data)
+#### adding trial makes everything into zeros???
+summary(model2)
+##rescale variables - not really an issue
+
+str(data)
+# Predictions in a new column, made based on model2
+data$PredictionsPerc = predict(model2)
+
+# Get the mean and range to start making guesses on the treshold
+mean(data$PredictionsPerc)
+range(data$PredictionsPerc)
+
+# Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+data$Predictions[data$PredictionsPerc > 0] = "control"
+data$Predictions[data$PredictionsPerc <= 0] = "schizophrenia"
+theMatrix = confusionMatrix(data = data$Predictions, reference = data$diagnosis, positive = "schizophrenia") 
+
+# Get the accuracy, sensitivity and specificity, PPV and NPV
+(accuracy = theMatrix$overall["Accuracy"])
+(sensitivity = theMatrix$byClass["Sensitivity"])
+(specificity = theMatrix$byClass["Specificity"])
+(PPV = theMatrix$byClass["Pos Pred Value"])
+(NPV = theMatrix$byClass["Neg Pred Value"])
+
+str(theMatrix)
+
+# ROC curve
+rocCurve = roc(response = data$diagnosis, predictor = data$PredictionsPerc)
+# Area under curve
+auc(rocCurve) ## 0.5752 under curve
+auc(roc(response = data$diagnosis, predictor = data$PredictionsPerc))
+# Confidence intervals
+ci(rocCurve)
+# Plot the curve, see where the specificity-sensitivity threshold should be, incorporate that in the above code (aim for 60% sensitivity)
+plot(rocCurve, legacy.axes = T)
+```
+accuracy = 0.44, 
+sensitivity = 0.31, 
+# samples with the event and predicted to have the event/samples having the event
+specificity = 0.57, 
+# samples without event and predicted as nonevents/samples without the event
+PPV = 0.41, 
+NPV = 0.46, 
+ROC curve
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures.
+
+smart solution: cvms package, write list of all models u want to test, tests all the models
+
+```{r}
+### CROSS-VALIDATED VERSION OF THE MODEL
+# Create folds
+folds = createFolds(unique(data$participant), 4)
+#d = data[data$participant %in% folds]
+## why do i have this?
+
+acc_train = NULL
+acc_test = NULL
+sensi_train = NULL #sensitivity
+sensi_test = NULL
+speci_train = NULL #specificity
+speci_test = NULL
+PPV_train = NULL
+PPV_test = NULL
+NPV_train = NULL
+NPV_test = NULL
+
+roc_train = NULL
+roc_test = NULL
+AUC_train = NULL
+AUC_test = NULL
+CI_train = NULL
+CI_test = NULL
+
+n = 1
+
+data$participant = as.numeric(data$participant)
+for(i in folds) {
+  #select data
+  dtraint = subset(data, !(participant %in% i))
+  dtestt = subset(data, participant %in% i)
+  #train model
+  model2 = glmer(diagnosis ~ range + (1|study), family = binomial, dtraint)
+  #test the model, traindata
+  #rmse_train[n] = Metrics::rmse(dtraint$diagnosis, fitted(model2))
+  # testtada
+  #rmse_test[n] = Metrics::rmse(dtestt$diagnosis, predict(model2, dtestt, allow.new.levels=T))
+  
+  # Predictions in a new column, made based on model2
+  dtraint$PredictionsPerc[n] = predict(model2)
+  dtestt$PredictionsPerc[n] = predict(model2)
+  
+  # Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+  dtraint$Predictions[dtraint$PredictionsPerc > 0][n] = "control"
+  dtraint$Predictions[dtraint$PredictionsPerc <= 0][n] = "schizophrenia"
+  #confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia") 
+  
+  dtestt$Predictions[dtestt$PredictionsPerc > 0][n] = "control"
+  dtestt$Predictions[dtestt$PredictionsPerc <= 0][n] = "schizophrenia"
+  
+  acc_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
+  #accuracy[n] = theMatrix[n]$overall["Accuracy"]
+  sensi_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
+  speci_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
+  PPV_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
+  NPV_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
+  
+  acc_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
+  sensi_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
+  speci_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
+  PPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
+  NPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
+  
+  # ROC curve, area under curve and confidence intervals
+  roc_train[n] = roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc)
+  AUC_train[n] = auc(roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc))
+  CI_train[n] = ci(roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc))
+  
+  roc_test[n] = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
+  AUC_test[n] = auc(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  CI_test[n] = ci(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  
+  #save the performance -- add to list c()
+  n = n+1
+}
+
+# Save the mean of results in a dataframe
+results_range = data.frame(model = c("train","test"),
+                     acc = c(mean(acc_train), mean(acc_test)),
+                     sensi = c(mean(sensi_train), mean(sensi_test)),
+                     speci = c(mean(speci_train), mean(speci_test)),
+                     PPV = c(mean(PPV_train), mean(PPV_test)),
+                     NPV = c(mean(NPV_train), mean(NPV_test)),
+                     AUC = c(mean(AUC_train), mean(AUC_test)),
+                     CI = c(mean(CI_train), mean(CI_test))
+)
+
+```
+
+
+N.B. the predict() function generates probabilities (the full scale between 0 and 1). A probability > .5 indicates a choice of 1, below a choice of 0.
+N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+
+### Question 2
+
+Which single predictor is the best predictor of diagnosis?
+
+start cross-validating to not overfit with just a regression, area under curve %
+
+```{r}
+data$participant = as.numeric(data$participant)
+
+# List of all the models that will be tested
+models = c("diagnosis ~ mean + (1|study)", 
+       "diagnosis ~ stdDev + (1|study)",
+       "diagnosis ~ range + (1|study)",
+       "diagnosis ~ median + (1|study)",
+       "diagnosis ~ InterquartileRange + (1|study)",
+       "diagnosis ~ MeanAbsoluteDeviation + (1|study)",
+       "diagnosis ~ coefficientOfVariation + (1|study)",
+       "diagnosis ~ delay + (1|study)",
+       "diagnosis ~ radius + (1|study)",
+       "diagnosis ~ embed + (1|study)",
+       "diagnosis ~ rqa_REC + (1|study)",
+       "diagnosis ~ rqa_DET + (1|study)",
+       "diagnosis ~ rqa_maxL + (1|study)",
+       "diagnosis ~ rqa_L + (1|study)",
+       "diagnosis ~ rqa_ENTR + (1|study)",
+       "diagnosis ~ rqa_LAM + (1|study)",
+       "diagnosis ~ rqa_TT + (1|study)"
+       )
+# To save results in a dataframe
+Results = as.data.frame(NULL)
+
+# Loop for ALL MODELS
+for (model in models){
+
+# Create folds
+folds = createFolds(unique(data$participant), 5)
+#d = data[data$participant %in% folds]
+## why do i have this?
+
+acc_test = NULL
+sensi_test = NULL
+speci_test = NULL
+PPV_test = NULL
+NPV_test = NULL
+
+roc_test = NULL
+AUC_test = NULL
+CI_test = NULL
+
+n = 1
+
+for(i in folds) {
+  #select data
+  dtraint = subset(data, !(participant %in% i))
+  dtestt = subset(data, participant %in% i)
+  #train model
+  model2 = glmer(diagnosis ~ InterquartileRange + (1|study), family = binomial, dtraint)
+  
+  # Predictions in a new column, made based on model2
+  dtestt$PredictionsPerc[n] = predict(model2)
+  
+  # Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+  dtestt$Predictions[dtestt$PredictionsPerc > 0][n] = "control"
+  dtestt$Predictions[dtestt$PredictionsPerc <= 0][n] = "schizophrenia"
+  
+  acc_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
+  sensi_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
+  speci_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
+  PPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
+  NPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
+  
+  # ROC curve, area under curve and confidence intervals
+  roc_test[n] = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
+  AUC_test[n] = auc(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  CI_test[n] = ci(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  
+  #save the performance -- add to list c()
+  n = n+1
+}
+
+# Add results to a row to add to dataframe
+add_row = data.frame(model = model,
+                     acc = mean(acc_test),
+                     sensi = mean(sensi_test),
+                     speci = mean(speci_test),
+                     PPV = mean(PPV_test),
+                     NPV = mean(NPV_test),
+                     AUC = mean(AUC_test),
+                     CI = mean(CI_test))
+
+# Bind final dataframe with all results
+Results = rbind(Results, add_row)
+
+}
+```
+
+
+### Question 3
+
+Now it's time to go wild! Use all (voice-related) variables and interactions you can think of. Compare models and select the best performing model you can find.
+
+Remember:
+- Cross-validation or AIC are crucial to build the best model!
+- After choosing the model, train it on all the data you have
+- Save the model: save(modelName, file = "BestModelForever.rda")
+- Create a Markdown that can: a) extract the features from new pitch files (basically your previous markdown), b) load your model (e.g. load("BestModelForever.rda")), and c) predict the diagnosis in the new dataframe.
+Send it to Celine and Riccardo by Monday (so they'll have time to run it before class)-
+
+### Question 4: Report the results
+
+METHODS SECTION: how did you analyse the data?
+
+RESULTS SECTION: can you diagnose schizophrenia based on voice? which features are used? Comment on the difference between the different performance measures.
+
+### Bonus question 5
+
+You have some additional bonus data involving speech rate, pauses, etc. Include them in your analysis. Do they improve classification?
+
+### Bonus question 6
+
+Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them.
+
+(same code, just replace the log reg part)
+
+```{r}
+## DEBUGGING THE CROSS VALIDATION
+model2 = glmer(diagnosis ~ range + (1|study), family = binomial, dtraint)
+#test the model, traindata
+#rmse_train[n] = Metrics::rmse(dtraint$diagnosis, fitted(model2))
+# testtada
+#rmse_test[n] = Metrics::rmse(dtestt$diagnosis, predict(model2, dtestt, allow.new.levels=T))
+
+# Predictions in a new column, made based on model2
+dtraint$PredictionsPerc[n] = predict(model2)
+
+# Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+dtraint$Predictions[dtraint$PredictionsPerc > 0][n] = "control"
+dtraint$Predictions[dtraint$PredictionsPerc <= 0][n] = "schizophrenia"
+#confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia") 
+
+# ROC curve
+rocCurve = roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc)
+# Area under curve
+AUC = auc(rocCurve) ## 0.5752 under curve
+# Confidence intervals
+CI[n] = ci(rocCurve)
+```
+
