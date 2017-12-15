@@ -26,19 +26,36 @@ data = read.csv("final_rqa.csv")
 
 data$participant = as.factor(data$participant)
 data$study = as.factor(data$study)
-str(data)
 
 # Scale everything
 data <- data %>% mutate_each_(funs(scale(.) %>% as.vector), 
                              vars=c("mean","stdDev","range","median","InterquartileRange","MeanAbsoluteDeviation","coefficientOfVariation","delay","radius","embed","rqa_REC","rqa_DET","rqa_maxL","rqa_L","rqa_ENTR","rqa_TT","rqa_LAM"))
 
+# Make an identical original dataframe
+d = data
+
+# Visualize
+ggplot(data, aes(diagnosis, range)) +
+  geom_boxplot() +
+  ggtitle("Pitch range in controls and Schizophrenia patients")
+
 # Predict schizophrenia from pitch range only
 model1 = glm(diagnosis ~ range, family = binomial, data)
-summary(model1)
+inv(summary(model1))
 
 ## not the best results
 # log odds tho
 exp(0.0481705)
+
+#How many skisos and controls do we have
+table(data$diagnosis)
+m = data %>%
+  group_by(participant) %>%
+  count(diagnosis == "control")
+
+colnames(m) = c("participant", "diagnosis", "n")
+table(m$diagnosis)
+#57 controls and 59 skiso
 
 ## 1.04935 control:skiso (but check pls)
 ``` 
@@ -48,15 +65,18 @@ Calculate the different performance measures (accuracy, sensitivity, specificity
 ```{r}
 # Start off with a glmer model (because you introduce random effects you can't really use glm anymore
 model2 = glmer(diagnosis ~ range + (1|study), family = binomial, data)
-#### adding trial makes everything into zeros???
 summary(model2)
+library(boot);library(lme4)
+#baseline
+inv.logit(fixef(model2)[[1]])
+#range
+inv.logit(fixef(model2)[[2]])
 ##rescale variables - not really an issue
 
-str(data)
 # Predictions in a new column, made based on model2
 data$PredictionsPerc = predict(model2)
 
-# Get the mean and range to start making guesses on the treshold
+# Get the mean and range to start making guesses on the threshold
 mean(data$PredictionsPerc)
 range(data$PredictionsPerc)
 
@@ -64,6 +84,7 @@ range(data$PredictionsPerc)
 data$Predictions[data$PredictionsPerc > 0] = "control"
 data$Predictions[data$PredictionsPerc <= 0] = "schizophrenia"
 theMatrix = confusionMatrix(data = data$Predictions, reference = data$diagnosis, positive = "schizophrenia") 
+theMatrix
 
 # Get the accuracy, sensitivity and specificity, PPV and NPV
 (accuracy = theMatrix$overall["Accuracy"])
@@ -99,91 +120,67 @@ smart solution: cvms package, write list of all models u want to test, tests all
 
 ```{r}
 ### CROSS-VALIDATED VERSION OF THE MODEL
+#Create ID as numbers for use in folding
+d$fold_id = as.numeric(d$participant)
 # Create folds
-folds = createFolds(unique(data$participant), 4)
-#d = data[data$participant %in% folds]
-## why do i have this?
+folds = createFolds(unique(d$fold_id), 5)
 
-acc_train = NULL
+# To save results in a dataframe
+Results_range = as.data.frame(NULL)
+
+# Create empty lists
 acc_test = NULL
-sensi_train = NULL #sensitivity
 sensi_test = NULL
-speci_train = NULL #specificity
 speci_test = NULL
-PPV_train = NULL
 PPV_test = NULL
-NPV_train = NULL
 NPV_test = NULL
 
-roc_train = NULL
-roc_test = NULL
-AUC_train = NULL
+rocC = NULL
 AUC_test = NULL
-CI_train = NULL
 CI_test = NULL
 
 n = 1
 
-data$participant = as.numeric(data$participant)
 for(i in folds) {
   #select data
-  dtraint = subset(data, !(participant %in% i))
-  dtestt = subset(data, participant %in% i)
+  dtraint = subset(d, !fold_id %in% i)
+  dtestt = subset(d, fold_id %in% i)
   #train model
-  model2 = glmer(diagnosis ~ range + (1|study), family = binomial, dtraint)
-  #test the model, traindata
-  #rmse_train[n] = Metrics::rmse(dtraint$diagnosis, fitted(model2))
-  # testtada
-  #rmse_test[n] = Metrics::rmse(dtestt$diagnosis, predict(model2, dtestt, allow.new.levels=T))
-  
+  model2 = glmer(diagnosis ~ range + (1|study), family = "binomial", dtraint)
+
   # Predictions in a new column, made based on model2
-  dtraint$PredictionsPerc[n] = predict(model2)
-  dtestt$PredictionsPerc[n] = predict(model2)
+  dtestt$PredictionsPerc = predict(model2, dtestt, allow.new.levels = T)
   
-  # Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
-  dtraint$Predictions[dtraint$PredictionsPerc > 0][n] = "control"
-  dtraint$Predictions[dtraint$PredictionsPerc <= 0][n] = "schizophrenia"
-  #confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia") 
+  # Set the threshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+  dtestt$Predictions[dtestt$PredictionsPerc > 0] = "control"
+  dtestt$Predictions[dtestt$PredictionsPerc <= 0] = "schizophrenia"
   
-  dtestt$Predictions[dtestt$PredictionsPerc > 0][n] = "control"
-  dtestt$Predictions[dtestt$PredictionsPerc <= 0][n] = "schizophrenia"
-  
-  acc_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
-  #accuracy[n] = theMatrix[n]$overall["Accuracy"]
-  sensi_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
-  speci_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
-  PPV_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
-  NPV_train[n] = confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
-  
-  acc_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
-  sensi_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
-  speci_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
-  PPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
-  NPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
+  CM = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")
+
+  acc_test[n] = CM$overall["Accuracy"]
+  sensi_test[n] = CM$byClass["Sensitivity"]
+  speci_test[n] = CM$byClass["Specificity"]
+  PPV_test[n] = CM$byClass["Pos Pred Value"]
+  NPV_test[n] = CM$byClass["Neg Pred Value"]
   
   # ROC curve, area under curve and confidence intervals
-  roc_train[n] = roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc)
-  AUC_train[n] = auc(roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc))
-  CI_train[n] = ci(roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc))
-  
-  roc_test[n] = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
-  AUC_test[n] = auc(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
-  CI_test[n] = ci(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  rocC = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
+  AUC_test[n] = auc(rocC)
+  CI_test[n] = ci(rocC)
   
   #save the performance -- add to list c()
   n = n+1
+  
 }
 
-# Save the mean of results in a dataframe
-results_range = data.frame(model = c("train","test"),
-                     acc = c(mean(acc_train), mean(acc_test)),
-                     sensi = c(mean(sensi_train), mean(sensi_test)),
-                     speci = c(mean(speci_train), mean(speci_test)),
-                     PPV = c(mean(PPV_train), mean(PPV_test)),
-                     NPV = c(mean(NPV_train), mean(NPV_test)),
-                     AUC = c(mean(AUC_train), mean(AUC_test)),
-                     CI = c(mean(CI_train), mean(CI_test))
-)
+results_range = data.frame(Model = "diagnosis ~ range + (1|study)",
+                     Accuracy = mean(acc_test, na.rm= T),
+                     Sensitivity = mean(sensi_test, na.rm= T),
+                     Specificity = mean(speci_test, na.rm= T),
+                     PPV = mean(PPV_test, na.rm= T),
+                     NPV = mean(NPV_test, na.rm= T),
+                     AUC = mean(AUC_test, na.rm= T),
+                     CI = mean(CI_test, na.rm= T))
 
 ```
 
@@ -199,6 +196,7 @@ Which single predictor is the best predictor of diagnosis?
 start cross-validating to not overfit with just a regression, area under curve %
 
 ```{r}
+library(caret)
 data$participant = as.numeric(data$participant)
 
 # List of all the models that will be tested
@@ -220,6 +218,7 @@ models = c("diagnosis ~ mean + (1|study)",
        "diagnosis ~ rqa_LAM + (1|study)",
        "diagnosis ~ rqa_TT + (1|study)"
        )
+
 # To save results in a dataframe
 Results = as.data.frame(NULL)
 
@@ -248,7 +247,7 @@ for(i in folds) {
   dtraint = subset(data, !(participant %in% i))
   dtestt = subset(data, participant %in% i)
   #train model
-  model2 = glmer(diagnosis ~ InterquartileRange + (1|study), family = binomial, dtraint)
+  model2 = glmer(model, dtraint, family = "binomial")
   
   # Predictions in a new column, made based on model2
   dtestt$PredictionsPerc[n] = predict(model2)
@@ -257,30 +256,32 @@ for(i in folds) {
   dtestt$Predictions[dtestt$PredictionsPerc > 0][n] = "control"
   dtestt$Predictions[dtestt$PredictionsPerc <= 0][n] = "schizophrenia"
   
-  acc_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$overall["Accuracy"]
-  sensi_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Sensitivity"]
-  speci_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Specificity"]
-  PPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Pos Pred Value"]
-  NPV_test[n] = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")$byClass["Neg Pred Value"]
+  CM = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")
+
+  acc_test[n] = CM$overall["Accuracy"]
+  sensi_test[n] = CM$byClass["Sensitivity"]
+  speci_test[n] = CM$byClass["Specificity"]
+  PPV_test[n] = CM$byClass["Pos Pred Value"]
+  NPV_test[n] = CM$byClass["Neg Pred Value"]
   
   # ROC curve, area under curve and confidence intervals
-  roc_test[n] = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
-  AUC_test[n] = auc(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
-  CI_test[n] = ci(roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc))
+  rocC = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
+  AUC_test[n] = auc(rocC)
+  CI_test[n] = ci(rocC)
   
   #save the performance -- add to list c()
   n = n+1
 }
 
 # Add results to a row to add to dataframe
-add_row = data.frame(model = model,
-                     acc = mean(acc_test),
-                     sensi = mean(sensi_test),
-                     speci = mean(speci_test),
-                     PPV = mean(PPV_test),
-                     NPV = mean(NPV_test),
-                     AUC = mean(AUC_test),
-                     CI = mean(CI_test))
+add_row = data.frame(Model = model,
+                     Accuracy = mean(acc_test, nar.rm = T),
+                     Sensitivity = mean(sensi_test, nar.rm = T),
+                     Specificity = mean(speci_test, nar.rm = T),
+                     PPV = mean(PPV_test, nar.rm = T),
+                     NPV = mean(NPV_test, nar.rm = T),
+                     AUC = mean(AUC_test, nar.rm = T),
+                     CI = mean(CI_test, nar.rm = T))
 
 # Bind final dataframe with all results
 Results = rbind(Results, add_row)
@@ -300,6 +301,89 @@ Remember:
 - Create a Markdown that can: a) extract the features from new pitch files (basically your previous markdown), b) load your model (e.g. load("BestModelForever.rda")), and c) predict the diagnosis in the new dataframe.
 Send it to Celine and Riccardo by Monday (so they'll have time to run it before class)-
 
+```{r}
+library(dplyr)
+
+# List of all the models that will be tested
+goodmodels = c("diagnosis ~ mean + stdDev + range + median + InterquartileRange + MeanAbsoluteDeviation + coefficientOfVariation + delay + radius + embed + rqa_REC + rqa_DET + rqa_L + rqa_ENTR + rqa_LAM + rqa_TT + (1|study)", ## All
+       "diagnosis ~ mean + stdDev + range + median + embed + rqa_DET + rqa_maxL + rqa_ENTR + (1|study)", # 50% best
+       "diagnosis ~ range + median + embed + rqa_DET + rqa_maxL + rqa_ENTR + (1|study)", #40% best
+       "diagnosis ~ median*range*mean + rqa_DET + (1|study)", #assume interactions
+       "diagnosis ~ mean + rqa_DET*rqa_REC*rqa_maxL*rqa_ENTR + (1|study)", #
+       "diagnosis ~ rqa_DET*rqa_L + (1|study)",
+       "diagnosis ~ median*range*mean + rqa_DET*rqa_REC*rqa_maxL*rqa_ENTR + (1|study)"
+       )
+# To save results in a dataframe
+BestModel = as.data.frame(NULL)
+
+# Loop for ALL MODELS
+for (model in goodmodels){
+
+# Create folds
+folds = createFolds(unique(data$participant), 5)
+#d = data[data$participant %in% folds]
+## why do i have this?
+
+acc_test = NULL
+sensi_test = NULL
+speci_test = NULL
+PPV_test = NULL
+NPV_test = NULL
+
+roc_test = NULL
+AUC_test = NULL
+CI_test = NULL
+
+n = 1
+
+for(i in folds) {
+  #select data
+  dtraint = subset(data, !(participant %in% i))
+  dtestt = subset(data, participant %in% i)
+  #train model
+  model2 = glmer(model, dtraint, family = "binomial")
+  
+  # Predictions in a new column, made based on model2
+  dtestt$PredictionsPerc[n] = predict(model2)
+  
+  # Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
+  dtestt$Predictions[dtestt$PredictionsPerc > 0][n] = "control"
+  dtestt$Predictions[dtestt$PredictionsPerc <= 0][n] = "schizophrenia"
+  
+  CM = confusionMatrix(data = dtestt$Predictions, reference = dtestt$diagnosis, positive = "schizophrenia")
+
+  acc_test[n] = CM$overall["Accuracy"]
+  sensi_test[n] = CM$byClass["Sensitivity"]
+  speci_test[n] = CM$byClass["Specificity"]
+  PPV_test[n] = CM$byClass["Pos Pred Value"]
+  NPV_test[n] = CM$byClass["Neg Pred Value"]
+  
+  # ROC curve, area under curve and confidence intervals
+  rocC = roc(response = dtestt$diagnosis, predictor = dtestt$PredictionsPerc)
+  AUC_test[n] = auc(rocC)
+  CI_test[n] = ci(rocC)
+  
+  #save the performance -- add to list c()
+  n = n+1
+}
+
+# Add results to a row to add to dataframe
+add_row = data.frame(Model = model,
+                     Accuracy = mean(acc_test, na.rm = T),
+                     Sensitivity = mean(sensi_test, na.rm = T),
+                     Specificity = mean(speci_test, na.rm = T),
+                     PPV = mean(PPV_test, na.rm = T),
+                     NPV = mean(NPV_test, na.rm = T),
+                     AUC = mean(AUC_test, na.rm = T),
+                     CI = mean(CI_test, na.rm = T))
+
+# Bind final dataframe with all results
+BestModel = rbind(BestModel, add_row)
+
+}
+```
+
+
 ### Question 4: Report the results
 
 METHODS SECTION: how did you analyse the data?
@@ -315,28 +399,3 @@ You have some additional bonus data involving speech rate, pauses, etc. Include 
 Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them.
 
 (same code, just replace the log reg part)
-
-```{r}
-## DEBUGGING THE CROSS VALIDATION
-model2 = glmer(diagnosis ~ range + (1|study), family = binomial, dtraint)
-#test the model, traindata
-#rmse_train[n] = Metrics::rmse(dtraint$diagnosis, fitted(model2))
-# testtada
-#rmse_test[n] = Metrics::rmse(dtestt$diagnosis, predict(model2, dtestt, allow.new.levels=T))
-
-# Predictions in a new column, made based on model2
-dtraint$PredictionsPerc[n] = predict(model2)
-
-# Set the treshold and run the confusion matrix, adjust threshold based on matrix (want to be high in sensitivity and low in specificity)
-dtraint$Predictions[dtraint$PredictionsPerc > 0][n] = "control"
-dtraint$Predictions[dtraint$PredictionsPerc <= 0][n] = "schizophrenia"
-#confusionMatrix(data = dtraint$Predictions, reference = dtraint$diagnosis, positive = "schizophrenia") 
-
-# ROC curve
-rocCurve = roc(response = dtraint$diagnosis, predictor = dtraint$PredictionsPerc)
-# Area under curve
-AUC = auc(rocCurve) ## 0.5752 under curve
-# Confidence intervals
-CI[n] = ci(rocCurve)
-```
-
